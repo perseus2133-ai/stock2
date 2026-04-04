@@ -233,6 +233,18 @@ KEYWORD_MAP = {
     "광고": "엔터/서비스", "여행": "엔터/서비스", "오락": "엔터/서비스",
     "컨설팅": "엔터/서비스", "서비스업": "엔터/서비스",
     "엔지니어링": "엔터/서비스", "인력": "엔터/서비스",
+    # 영문 GICS / FDR 영문 Sector 대응
+    "Semiconductor": "반도체/전자", "Electronic": "반도체/전자",
+    "Software": "IT/소프트웨어", "Technology": "IT/소프트웨어",
+    "Automobile": "자동차/운송장비", "Automotive": "자동차/운송장비",
+    "Pharmaceutical": "바이오/제약", "Biotech": "바이오/제약",
+    "Bank": "금융", "Insurance": "금융", "Financial": "금융",
+    "Chemical": "화학/소재", "Material": "화학/소재",
+    "Telecom": "통신/미디어", "Media": "통신/미디어",
+    "Retail": "유통/소비재", "Consumer": "유통/소비재",
+    "Construction": "건설/인프라", "Utility": "건설/인프라",
+    "Machinery": "기계/장비", "Equipment": "기계/장비",
+    "Entertainment": "엔터/서비스", "Service": "엔터/서비스",
 }
 
 
