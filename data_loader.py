@@ -1,8 +1,9 @@
 """
 KRX 주식 데이터 로딩 모듈
-우선순위:
-  1) pykrx  - Streamlit Cloud(Linux)에서 안정적
-  2) 네이버 스크래핑 - 로컬 Windows 백업
+전략:
+  1) FDR StockListing   - 시가총액 + 종가 (매우 안정적)
+  2) pykrx fundamental  - PER/PBR/EPS/BPS/DIV
+  3) 네이버 스크래핑     - pykrx 실패 시 펀더멘탈 fallback
 """
 
 import streamlit as st
@@ -37,6 +38,15 @@ def _num(text):
         return 0
 
 
+def _get_latest_trading_date() -> str:
+    today = datetime.now()
+    for i in range(7):
+        d = today - timedelta(days=i)
+        if d.weekday() < 5:
+            return d.strftime('%Y%m%d')
+    return (today - timedelta(days=1)).strftime('%Y%m%d')
+
+
 # ─── 공통: KRX-DESC 종목 리스트 (업종) ────────────────
 @st.cache_data(ttl=86400, show_spinner="종목 리스트 불러오는 중...")
 def load_stock_listing() -> pd.DataFrame:
@@ -49,76 +59,121 @@ def load_stock_listing() -> pd.DataFrame:
         return pd.DataFrame()
 
 
-# ─── 방법 1: pykrx ───────────────────────────────────
-def _get_latest_trading_date() -> str:
-    today = datetime.now()
-    # 주말 제외, 최근 7일 내 영업일
-    for i in range(7):
-        d = today - timedelta(days=i)
-        if d.weekday() < 5:          # 월~금
-            return d.strftime('%Y%m%d')
-    return (today - timedelta(days=1)).strftime('%Y%m%d')
+# ─── 방법 1: FDR 시가총액 + pykrx 펀더멘탈 ─────────────
+@st.cache_data(ttl=3600, show_spinner="시장 데이터 로딩 중...")
+def _load_fdr_market() -> pd.DataFrame:
+    """FDR로 시가총액, pykrx로 PER/PBR/EPS 가져오기"""
 
-
-@st.cache_data(ttl=3600, show_spinner="시장 데이터 로딩 중 (pykrx)...")
-def _load_pykrx() -> pd.DataFrame:
-    """pykrx로 시총 + 펀더멘탈 로드 (Cloud Linux 환경에서 정상 작동)"""
+    # 1-A. FDR StockListing으로 시가총액 수집
+    market_df = pd.DataFrame()
     try:
-        from pykrx import stock as pykrx_stock
+        frames = []
+        for mkt in ['KOSPI', 'KOSDAQ']:
+            try:
+                df_mkt = fdr.StockListing(mkt)
+                if df_mkt is not None and not df_mkt.empty:
+                    df_mkt = df_mkt.copy()
+                    df_mkt['_mkt'] = mkt
+                    frames.append(df_mkt)
+            except:
+                pass
 
-        date_str = _get_latest_trading_date()
+        if frames:
+            market_df = pd.concat(frames, ignore_index=True)
 
-        # 시가총액
-        caps = pykrx_stock.get_market_cap_by_ticker(date_str, market="ALL")
-        if caps is None or caps.empty:
-            return pd.DataFrame()
-
-        # 펀더멘탈
-        fund = pykrx_stock.get_market_fundamental_by_ticker(date_str, market="ALL")
-        if fund is None or fund.empty:
-            return pd.DataFrame()
-
-        # 병합
-        df = caps.join(fund, how='left')
-        df.index.name = 'Code'
-        df = df.reset_index()
-        df['Code'] = df['Code'].astype(str).str.zfill(6)
-
-        # 시가총액 컬럼 통일 (한글/영문 둘 다 대응)
-        for col in df.columns:
-            if '시가총액' in str(col) or col == 'MarCap':
-                df = df.rename(columns={col: '시가총액'})
-                break
-
-        # 필수 컬럼 확인
-        required = ['시가총액', 'PER', 'PBR', 'EPS']
-        if not all(c in df.columns for c in required):
-            return pd.DataFrame()
-
-        # 종가 컬럼 (없으면 0)
-        if '종가' not in df.columns:
-            for c in ['Close', 'close']:
-                if c in df.columns:
-                    df = df.rename(columns={c: '종가'})
+            # Code 컬럼 통일
+            for col in ['Code', 'Symbol', 'ISU_SRT_CD']:
+                if col in market_df.columns:
+                    market_df = market_df.rename(columns={col: 'Code'})
                     break
-            else:
-                df['종가'] = 0
 
-        if 'DIV' not in df.columns:
-            df['DIV'] = 0
-        if 'BPS' not in df.columns:
-            df['BPS'] = 0
+            if 'Code' not in market_df.columns:
+                return pd.DataFrame()
 
-        # Name은 listing에서 가져옴 (pykrx에는 이름 없음)
-        df.attrs['date'] = date_str
-        return df
+            market_df['Code'] = (
+                market_df['Code'].astype(str)
+                .str.extract(r'(\d{6})')[0]
+                .fillna('')
+            )
+            market_df = market_df[market_df['Code'].str.len() == 6].copy()
+
+            # 시가총액 컬럼 통일
+            for col in market_df.columns:
+                col_lower = str(col).lower()
+                if col_lower == 'marcap' or '시가총액' in col_lower:
+                    market_df = market_df.rename(columns={col: '시가총액'})
+                    break
+            if '시가총액' not in market_df.columns:
+                market_df['시가총액'] = 0
+
+            # 종가 컬럼 통일
+            for col in ['Close', 'close', '종가', 'Price']:
+                if col in market_df.columns:
+                    market_df = market_df.rename(columns={col: '종가'})
+                    break
+            if '종가' not in market_df.columns:
+                market_df['종가'] = 0
+
+            # 이름 컬럼 통일
+            for col in ['Name', 'name', '종목명']:
+                if col in market_df.columns:
+                    market_df = market_df.rename(columns={col: 'Name'})
+                    break
+            if 'Name' not in market_df.columns:
+                market_df['Name'] = market_df['Code']
+
+            # 필요 컬럼만
+            keep = ['Code', 'Name', '시가총액', '종가']
+            market_df = market_df[[c for c in keep if c in market_df.columns]].copy()
+            market_df['시가총액'] = pd.to_numeric(market_df['시가총액'], errors='coerce').fillna(0)
+            market_df['종가'] = pd.to_numeric(market_df['종가'], errors='coerce').fillna(0)
 
     except Exception as e:
-        # Windows 인코딩 오류 등 → 빈 DataFrame 반환 → naver fallback
         return pd.DataFrame()
 
+    if market_df.empty:
+        return pd.DataFrame()
 
-# ─── 방법 2: 네이버 스크래핑 (Windows/로컬 백업) ────────
+    # 1-B. pykrx로 펀더멘탈 (PER, PBR, EPS, BPS, DIV)
+    fund_df = pd.DataFrame()
+    try:
+        from pykrx import stock as pykrx_stock
+        date_str = _get_latest_trading_date()
+
+        fund_frames = []
+        for market in ["KOSPI", "KOSDAQ"]:
+            try:
+                fund = pykrx_stock.get_market_fundamental_by_ticker(date_str, market=market)
+                if fund is not None and not fund.empty:
+                    fund_frames.append(fund)
+            except:
+                pass
+
+        if fund_frames:
+            fund_df = pd.concat(fund_frames)
+            fund_df.index.name = 'Code'
+            fund_df = fund_df.reset_index()
+            fund_df['Code'] = fund_df['Code'].astype(str).str.zfill(6)
+    except:
+        pass
+
+    # 1-C. merge
+    if not fund_df.empty:
+        fund_cols = ['Code'] + [c for c in ['BPS', 'PER', 'PBR', 'EPS', 'DIV', 'DPS']
+                                 if c in fund_df.columns]
+        result = market_df.merge(fund_df[fund_cols], on='Code', how='left')
+    else:
+        result = market_df.copy()
+
+    for col in ['BPS', 'PER', 'PBR', 'EPS', 'DIV']:
+        if col not in result.columns:
+            result[col] = 0
+        result[col] = pd.to_numeric(result[col], errors='coerce').fillna(0)
+
+    return result
+
+
+# ─── 방법 2: 네이버 스크래핑 fallback ────────────────
 def _naver_fetch_page(session, sosok: int, page: int) -> list:
     url = f'https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}'
     resp = session.get(url, timeout=15)
@@ -128,7 +183,6 @@ def _naver_fetch_page(session, sosok: int, page: int) -> list:
     if not table:
         return []
 
-    # 헤더로 컬럼 위치 동적 탐색
     header_cells = table.select('thead th') or table.select('tr th')
     headers = [h.get_text(strip=True) for h in header_cells]
 
@@ -183,7 +237,6 @@ def _naver_fetch_page(session, sosok: int, page: int) -> list:
 @st.cache_data(ttl=3600, show_spinner="네이버 증권에서 시세 수집 중...")
 def _load_naver_bulk(sosok: int) -> pd.DataFrame:
     session = _session()
-    # 필드 설정 시도 (로컬에서는 동작)
     try:
         session.post('https://finance.naver.com/sise/field_submit.naver', data={
             'menu': 'market_sum',
@@ -216,11 +269,8 @@ def _load_naver_bulk(sosok: int) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = pd.DataFrame(all_rows)
-    # Market 컬럼
     df['Market'] = 'KOSPI' if sosok == 0 else 'KOSDAQ'
-    # 종가 = 현재가
     df['종가'] = df['현재가']
-    # 시총 0 제거
     df = df[df['시가총액'] > 0]
     return df
 
@@ -231,22 +281,10 @@ def build_master_dataframe() -> pd.DataFrame:
     # 1. 업종 정보
     listing = load_stock_listing()
 
-    # 2. 시세 데이터: pykrx 우선, 실패 시 naver
-    pykrx_df = _load_pykrx()
+    # 2. 시세 데이터: FDR+pykrx 우선, 실패 시 naver
+    market_data = _load_fdr_market()
 
-    if not pykrx_df.empty:
-        # pykrx 성공 → 이름은 listing에서 보완
-        market_data = pykrx_df.copy()
-        if not listing.empty and 'Name' in listing.columns:
-            market_data = market_data.merge(
-                listing[['Code', 'Name']], on='Code', how='left'
-            )
-        if 'Name' not in market_data.columns:
-            market_data['Name'] = market_data['Code']
-        market_data['Market'] = '전체'
-
-    else:
-        # naver 스크래핑 fallback
+    if market_data.empty:
         k = _load_naver_bulk(0)
         q = _load_naver_bulk(1)
         if k.empty and q.empty:
@@ -278,7 +316,6 @@ def build_master_dataframe() -> pd.DataFrame:
             listing[cols].drop_duplicates('Code'),
             on='Code', how='inner', suffixes=('', '_lst')
         )
-        # Name 컬럼 정리
         if 'Name_lst' in market_data.columns:
             market_data['Name'] = market_data['Name'].fillna(market_data['Name_lst'])
             market_data.drop(columns=['Name_lst'], inplace=True)
