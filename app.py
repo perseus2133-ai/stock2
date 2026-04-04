@@ -187,9 +187,14 @@ with st.sidebar:
 @st.cache_data(ttl=3600, show_spinner="전체 데이터를 분석하고 있습니다...")
 def get_processed_data(market_filter_val, min_mcap_val):
     from datetime import datetime
-    df = build_master_dataframe()
-    if df.empty:
-        return pd.DataFrame(), pd.DataFrame(), [], ""
+    result = build_master_dataframe()
+    if isinstance(result, tuple):
+        df, debug_log = result
+    else:
+        df, debug_log = result, []
+
+    if df is None or (isinstance(df, pd.DataFrame) and df.empty):
+        return pd.DataFrame(), pd.DataFrame(), [], "", debug_log
 
     data_date = df.attrs.get('date', datetime.now().strftime('%Y-%m-%d'))
 
@@ -212,12 +217,18 @@ def get_processed_data(market_filter_val, min_mcap_val):
     summary = get_sector_summary(df)
     top_sectors = get_top_sectors(df, 10)
 
-    return df, summary, top_sectors, data_date
+    return df, summary, top_sectors, data_date, debug_log
 
 
 with st.spinner("데이터를 불러오고 있습니다..."):
-    master_df, sector_summary, top_sectors, data_date = get_processed_data(market_filter, min_mcap)
+    master_df, sector_summary, top_sectors, data_date, debug_log = get_processed_data(market_filter, min_mcap)
 
+# 사이드바에 디버그 정보
+if debug_log:
+    with st.sidebar:
+        with st.expander("데이터 로딩 로그", expanded=False):
+            for msg in debug_log:
+                st.caption(msg)
 
 if master_df.empty:
     st.error("데이터를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.")
@@ -349,10 +360,11 @@ elif st.session_state.view == 'sector_detail':
     st.markdown("### 저평가 종목 순위")
     st.markdown("*저평가 점수가 높을수록 업종 내 실적 대비 시가총액이 낮은 종목입니다*")
 
-    ranked = sector_df.sort_values('저평가점수', ascending=False).reset_index(drop=True)
+    sort_col = '저평가점수' if '저평가점수' in sector_df.columns else '시가총액'
+    ranked = sector_df.sort_values(sort_col, ascending=False).reset_index(drop=True)
 
-    for i, row in ranked.iterrows():
-        score = row.get('저평가점수', 0)
+    for i, (_, row) in enumerate(ranked.iterrows()):
+        score = row.get('저평가점수', 0) if '저평가점수' in ranked.columns else 0
         if score >= 70:
             badge_class = 'score-high'
         elif score >= 40:

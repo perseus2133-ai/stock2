@@ -20,6 +20,8 @@ def compute_undervaluation_scores(df: pd.DataFrame) -> pd.DataFrame:
     ].copy()
 
     if valid.empty:
+        df['저평가점수'] = 0
+        df['업종순위'] = 999
         return df
 
     # 수익성 지표 계산

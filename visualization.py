@@ -78,6 +78,8 @@ def create_sector_stocks_3d(sector_df: pd.DataFrame, sector_name: str) -> go.Fig
 
     df['log_mcap'] = np.log10(df['시가총액'])
     df['시총_억'] = (df['시가총액'] / 1e8).round(0)
+    if '저평가점수' not in df.columns:
+        df['저평가점수'] = 0
 
     fig = go.Figure(data=[go.Scatter3d(
         x=df['PER'],
