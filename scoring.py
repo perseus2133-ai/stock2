@@ -14,9 +14,9 @@ def compute_undervaluation_scores(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = df.copy()
 
-    # 기본 필터: PER, PBR > 0 (흑자 기업만)
+    # 기본 필터: PER, PBR > 0 (EPS는 선택)
     valid = df[
-        (df['PER'] > 0) & (df['PBR'] > 0) & (df['EPS'] > 0)
+        (df['PER'] > 0) & (df['PBR'] > 0)
     ].copy()
 
     if valid.empty:
